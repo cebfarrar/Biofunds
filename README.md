@@ -32,7 +32,8 @@ Public equity markets demonstrate systematic mispricing of clinical trial cataly
 
 In a perfectly efficient market, scientifically sophisticated investors would arbitrage away any predictable mispricings. The persistent existence of post-event corrections suggests structural market inefficiency.
 
-![Clinical Trial Price Discovery](<img width="906" height="461" alt="Screenshot 2026-01-14 at 16 44 49" src="https://github.com/user-attachments/assets/6cc6f808-0498-4a0d-b6c5-5a5ba5f8ab97" />)
+![Clinical Trial Price Discovery]
+<img width="906" height="461" alt="Screenshot 2026-01-14 at 16 44 49" src="https://github.com/user-attachments/assets/6cc6f808-0498-4a0d-b6c5-5a5ba5f8ab97" />
 *Figure 1: Market price discovery around clinical trial catalyst events demonstrates systematic under-reaction to positive outcomes and over-reaction to negative outcomes.*
 
 ## Theoretical Foundation
