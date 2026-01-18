@@ -6,7 +6,10 @@ This project tracks what biotech-focused hedge funds are betting on and attempts
 
 ## The Hypothesis
 
-Biotech markets systematically misprice binary clinical events. A Phase 3 trial either works or it doesn't—but the market often gets the probability wrong. Meanwhile, specialist funds are taking 5-8% portfolio positions on single trials. When they bet big, they're signaling high confidence.
+Biotech markets systematically misprice binary clinical events. 
+<img width="919" height="442" alt="Screenshot 2026-01-18 at 21 54 58" src="https://github.com/user-attachments/assets/6bf8c33c-b874-4b9b-be37-d2b81c09a9ff" />
+
+A Phase 3 trial either works or it doesn't - but the market often gets the probability wrong. Meanwhile, specialist funds are taking 5-8% portfolio positions on single trials. A big bet is a confident bet, and these funds will have risk management procedures to know their internal failure rate at big bets, and so should be worth following.
 
 ## How It Works
 
