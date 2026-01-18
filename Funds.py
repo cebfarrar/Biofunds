@@ -880,7 +880,7 @@ def file_downloader():
     for fund_name, cik in FUNDS.items():
         print(f"Processing {fund_name} ({cik})...")
         try:
-            downloader.get("13F-HR", cik, limit=40)
+            downloader.get("13F-HR", cik, limit=80)
             # FIX 6: Rate Limiting
             time.sleep(0.5) 
             print(f"Done downloading {fund_name}")
@@ -1022,7 +1022,7 @@ def process_filings():
             print(f"⚠ {fund_name}: No quarters found.")
 
 
-# --- 4. MASTER SET GENERATION ---
+#4. MASTER SET GENERATION ---
 def master_set(base_path):
     print("\n--- Generating Master Set ---")
     all_latest_fund_holdings = []
@@ -1129,6 +1129,74 @@ def master_set(base_path):
     final_master_table.to_csv(output_path, index=False)
     print(f"\n✅ Master data generated. Saved {len(final_master_table)} unique CUSIPs to {output_path}")
     return final_master_table
+
+#4.5
+def populate_fund_holdings_database():
+    """
+    Load all fund CSV files into the fund_holdings database table
+    Run this after generate_master_holdings() to sync CSVs to database
+    """
+    print("\n=== POPULATING FUND HOLDINGS DATABASE ===\n")
+    
+    conn = sqlite3.connect(DB_PATH)
+    
+    # Clear existing data
+    conn.execute("DELETE FROM fund_holdings")
+    
+    total_rows = 0
+    
+    for fund_name, cik in FUNDS.items():
+        fund_csv = base_path / cik / f"{fund_name}.csv"
+        
+        if not fund_csv.exists():
+            continue
+        
+        print(f"Loading {fund_name}...", end=' ', flush=True)
+        
+        try:
+            df = pd.read_csv(fund_csv)
+            df = df.dropna(subset=['cusip', 'quarter', 'report_date'])
+            
+            # Normalize CUSIPs
+            df['cusip'] = df['cusip'].apply(normalize_cusip)
+            
+            # Insert into database
+            for _, row in df.iterrows():
+                conn.execute('''
+                    INSERT INTO fund_holdings 
+                    (fund_name, cusip, quarter, report_date, filing_date, 
+                     shares, value, position_pct, shares_change_pct, value_change_pct)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    fund_name,
+                    row['cusip'],
+                    row['quarter'],
+                    row['report_date'],
+                    row['filing_date'],
+                    row.get('shares'),
+                    row.get('value'),
+                    row.get('weight_pct'),  # Note: CSV calls it weight_pct
+                    row.get('shares_change_pct'),
+                    row.get('value_change_pct')
+                ))
+            
+            total_rows += len(df)
+            print(f"✓ {len(df)} holdings")
+            
+        except Exception as e:
+            print(f"✗ Error: {e}")
+            continue
+    
+    conn.commit()
+    
+    # Verify
+    count = conn.execute("SELECT COUNT(*) FROM fund_holdings").fetchone()[0]
+    funds_count = conn.execute("SELECT COUNT(DISTINCT fund_name) FROM fund_holdings").fetchone()[0]
+    
+    conn.close()
+    
+    print(f"\n✅ Loaded {count:,} holdings from {funds_count} funds into database")
+
 
 def setup_database():
     """
@@ -1456,22 +1524,29 @@ def query_clinicaltrials_for_company(
             break
     
     return all_trials
-#7. 
 def populate_clinical_trials_database():
     """
     Query ClinicalTrials.gov for all companies and store in database
     
-    FIXED: Actually stores data in database now
+    FIXED: 
+    - Actually stores data in database now
+    - Validates sponsor name matches before storing
     """
     print("\n=== QUERYING CLINICALTRIALS.GOV ===\n")
     
     conn = sqlite3.connect(DB_PATH)
     
     # Get companies
-    companies = pd.read_sql("SELECT cusip, issuer_name_clean FROM companies", conn)
+    companies = pd.read_sql("""
+        SELECT cusip, issuer_name_clean 
+        FROM companies
+        WHERE is_biotech = 1
+        ORDER BY ticker
+    """, conn)
     
     total_trials = 0
     companies_with_trials = 0
+    skipped_sponsor_mismatch = 0
     
     for idx, row in companies.iterrows():
         cusip = row['cusip']
@@ -1482,11 +1557,39 @@ def populate_clinical_trials_database():
         trials = query_clinicaltrials_for_company(company_name)
         
         if trials:
-            print(f"✓ {len(trials)} trials")
-            companies_with_trials += 1
+            valid_trials = 0
             
-            # FIXED: Actually insert into database
+            # ================================================================
+            # CRITICAL FIX: Validate sponsor name matches
+            # ================================================================
             for trial in trials:
+                sponsor_name = trial['sponsor']
+                
+                # Check if sponsor name reasonably matches company name
+                # Allow partial matches (e.g., "Incyte" matches "Incyte Corporation")
+                sponsor_lower = sponsor_name.lower() if sponsor_name else ""
+                company_lower = company_name.lower()
+                
+                # Extract first word of company name (e.g., "Incyte" from "Incyte Corporation")
+                company_first_word = company_lower.split()[0] if company_lower else ""
+                
+                # Match if:
+                # 1. Exact match (case insensitive)
+                # 2. Sponsor contains company name
+                # 3. Company name contains sponsor
+                # 4. First word matches (for "Incyte Corp" vs "Incyte")
+                is_sponsor_match = (
+                    sponsor_lower == company_lower or
+                    company_lower in sponsor_lower or
+                    sponsor_lower in company_lower or
+                    (len(company_first_word) > 3 and company_first_word in sponsor_lower)
+                )
+                
+                if not is_sponsor_match:
+                    skipped_sponsor_mismatch += 1
+                    continue
+                # ================================================================
+                
                 try:
                     conn.execute('''
                         INSERT OR IGNORE INTO clinical_trials 
@@ -1507,14 +1610,21 @@ def populate_clinical_trials_database():
                         trial['completion_date'],
                         trial['last_updated']
                     ))
+                    valid_trials += 1
                 except Exception as e:
                     print(f"\n  ⚠ Error inserting {trial['nct_id']}: {e}")
             
-            total_trials += len(trials)
+            total_trials += valid_trials
+            
+            if valid_trials > 0:
+                companies_with_trials += 1
+                print(f"✓ {valid_trials} trials (validated)")
+            else:
+                print("✓ 0 trials (all filtered)")
         else:
             print("✓ 0 trials")
         
-        # FIXED: Commit every 10 companies
+        # Commit every 10 companies
         if (idx + 1) % 10 == 0:
             conn.commit()
             print(f"  💾 Committed batch ({idx+1}/{len(companies)})")
@@ -1533,6 +1643,7 @@ def populate_clinical_trials_database():
     print(f"\n✅ Results:")
     print(f"   - Companies with trials: {companies_with_trials}/{len(companies)}")
     print(f"   - Total trials found: {total_trials}")
+    print(f"   - Trials skipped (sponsor mismatch): {skipped_sponsor_mismatch}")
     print(f"   - Total trials in database: {stored_count}")
     
     if stored_count == 0:
@@ -1549,7 +1660,7 @@ def export_companies_for_ticker_entry():
     - company_name
     - ticker (empty - YOU fill this in)
     - exchange (empty - YOU fill this in)
-    - notes (empty - for your comments)
+    - is_biotech (empty - for your comments)
     """
     print("\n=== EXPORTING COMPANIES FOR TICKER ENTRY ===\n")
     
@@ -1562,7 +1673,7 @@ def export_companies_for_ticker_entry():
             issuer_name_clean as company_name,
             ticker,
             '' as exchange,
-            '' as notes
+            '' as is_biotech
         FROM companies
         ORDER BY issuer_name_clean
     """, conn)
@@ -1598,7 +1709,7 @@ def import_tickers_from_csv():
     
     # Normalize CUSIPs to match database (9 digits with leading zeros)
     tickers_df['cusip'] = tickers_df['cusip'].apply(normalize_cusip)
-
+    
     # Filter for rows with tickers entered
     tickers_df = tickers_df[tickers_df['ticker'].notna() & (tickers_df['ticker'] != '')]
     
@@ -1610,23 +1721,42 @@ def import_tickers_from_csv():
     
     conn = sqlite3.connect(DB_PATH)
     
+    # ADD COLUMN IF NOT EXISTS
+    try:
+        conn.execute('ALTER TABLE companies ADD COLUMN is_biotech INTEGER DEFAULT 1')
+    except:
+        pass  # Column already exists
+    
     imported = 0
     
     for _, row in tickers_df.iterrows():
         cusip = row['cusip']
         ticker = str(row['ticker']).strip().upper()
         
-        # Update database
+        # NEW: Get is_biotech flag (default to Yes if missing)
+        is_biotech_str = str(row.get('is_biotech', 'Yes')).strip().lower()
+        is_biotech = 1 if is_biotech_str in ['yes', 'y', '1', 'true'] else 0
+        
+        # Update database with is_biotech flag
         conn.execute('''
             UPDATE companies 
-            SET ticker = ?, last_updated = ?
+            SET ticker = ?, is_biotech = ?, last_updated = ?
             WHERE cusip = ?
-        ''', (ticker, datetime.now().date(), cusip))
+        ''', (ticker, is_biotech, datetime.now().date(), cusip))
         
         imported += 1
     
     conn.commit()
+    
+    # Show stats
+    biotech_count = conn.execute('SELECT COUNT(*) FROM companies WHERE is_biotech = 1').fetchone()[0]
+    non_biotech_count = conn.execute('SELECT COUNT(*) FROM companies WHERE is_biotech = 0').fetchone()[0]
+    
     conn.close()
+    
+    print(f"✅ Imported {imported} tickers into database")
+    print(f"   Biotech: {biotech_count}")
+    print(f"   Non-biotech: {non_biotech_count}")
     
     print(f"✅ Imported {imported} tickers into database")
 
@@ -1637,7 +1767,7 @@ def download_10y_price_history_for_all_tickers():
     Stores in database for instant access later
     Much faster than fetching on-demand
     """
-    print("\n=== DOWNLOADING 10-YEAR PRICE HISTORY ===\n")
+    print("\n=== DOWNLOADING 20-YEAR PRICE HISTORY ===\n")
 
     conn = sqlite3.connect(DB_PATH)
 
@@ -1670,7 +1800,7 @@ def download_10y_price_history_for_all_tickers():
 
     import yfinance as yf
 
-    ten_years_ago = datetime.now() - timedelta(days=3650)
+    ten_years_ago = datetime.now() - timedelta(days=7300)
     today = datetime.now()
 
     success_count = 0
@@ -2012,6 +2142,7 @@ def get_peak_daily_move_in_announcement_window(ticker, completion_date,
         return None
 
 #12:
+#12:
 def label_trial_outcomes_from_announcement_spike():
     """
     Label trial outcomes based on actual returns from entry to announcement
@@ -2031,6 +2162,20 @@ def label_trial_outcomes_from_announcement_spike():
         conn.execute('ALTER TABLE trial_stock_prices ADD COLUMN trial_outcome_by_return TEXT')
     except:
         pass  # Columns already exist
+
+    # ========================================================================
+    # NEW SECTION: ADD DISEASE CATEGORY COLUMNS TO clinical_trials IF MISSING
+    # ========================================================================
+    try:
+        conn.execute('ALTER TABLE clinical_trials ADD COLUMN disease_category TEXT')
+        conn.execute('ALTER TABLE clinical_trials ADD COLUMN phase3_success_rate REAL')
+        conn.execute('ALTER TABLE clinical_trials ADD COLUMN phase2_success_rate REAL')
+        print("✓ Added disease category columns to clinical_trials table\n")
+    except:
+        pass  # Columns already exist
+    # ========================================================================
+    # END NEW SECTION
+    # ========================================================================
 
     # Get all trials that already have peak announcement data (from your existing step #12)
     trials = pd.read_sql("""
@@ -2072,10 +2217,20 @@ def label_trial_outcomes_from_announcement_spike():
         # Calculate actual return from entry (30d before) to announcement day
         actual_return_pct = ((exit_price - entry_price) / entry_price) * 100
         
-        # Label based on return thresholds (you can adjust these)
-        if actual_return_pct > 20:
+        # ============================================================
+        # ADD THIS VALIDATION CHECK
+        # ============================================================
+        if abs(actual_return_pct) > 500:
+            print(f"  ⚠ SUSPICIOUS: {ticker} on {announcement_date}: "
+                  f"Entry=${entry_price:.2f}, Exit=${exit_price:.2f}, "
+                  f"Return={actual_return_pct:+.1f}% - SKIPPING")
+            continue
+
+
+        # Label based on return thresholds (CHANGED TO 10% FROM 20%)
+        if actual_return_pct > 5:  # Changed from 20
             outcome = 'success'
-        elif actual_return_pct < -20:
+        elif actual_return_pct < -5:  # Changed from -20
             outcome = 'failure'
         else:
             outcome = 'neutral'
@@ -2098,7 +2253,76 @@ def label_trial_outcomes_from_announcement_spike():
 
     conn.commit()
 
-    # Show summary
+    # ========================================================================
+    # NEW SECTION: POPULATE DISEASE CATEGORIES FOR ALL COMPLETED TRIALS
+    # ========================================================================
+    print(f"\n{'='*80}")
+    print("POPULATING DISEASE CATEGORIES FOR COMPLETED TRIALS")
+    print(f"{'='*80}\n")
+    
+    # Get all trials from clinical_trials that need disease categories
+    trials_to_classify = pd.read_sql("""
+        SELECT 
+            ct.nct_id,
+            ct.indication,
+            ct.phase
+        FROM clinical_trials ct
+        WHERE ct.trial_status = 'COMPLETED'
+        AND (ct.disease_category IS NULL OR ct.disease_category = '')
+    """, conn)
+    
+    print(f"Found {len(trials_to_classify)} completed trials without disease categories")
+    
+    classified = 0
+    
+    for idx, row in trials_to_classify.iterrows():
+        # Use your existing classify_disease_category function
+        category, phase3_rate, phase2_rate = classify_disease_category(row['indication'])
+        
+        # Update the clinical_trials table
+        conn.execute('''
+            UPDATE clinical_trials
+            SET disease_category = ?,
+                phase3_success_rate = ?,
+                phase2_success_rate = ?
+            WHERE nct_id = ?
+        ''', (category, phase3_rate, phase2_rate, row['nct_id']))
+        
+        classified += 1
+        
+        if classified % 100 == 0:
+            print(f"  [{classified}/{len(trials_to_classify)}] Classified")
+            conn.commit()
+    
+    conn.commit()
+    
+    print(f"\n✓ Classified {classified} completed trials by disease category")
+    
+    # Show distribution
+    category_dist = pd.read_sql("""
+        SELECT 
+            disease_category,
+            phase,
+            COUNT(*) as count,
+            ROUND(AVG(phase3_success_rate), 3) as avg_phase3_rate,
+            ROUND(AVG(phase2_success_rate), 3) as avg_phase2_rate
+        FROM clinical_trials
+        WHERE trial_status = 'COMPLETED'
+        AND disease_category IS NOT NULL
+        GROUP BY disease_category, phase
+        ORDER BY count DESC
+        LIMIT 20
+    """, conn)
+    
+    print(f"\n{'='*80}")
+    print("DISEASE CATEGORY DISTRIBUTION (TOP 20)")
+    print(f"{'='*80}\n")
+    print(category_dist.to_string(index=False))
+    # ========================================================================
+    # END NEW SECTION
+    # ========================================================================
+
+    # Show summary of outcomes
     summary = pd.read_sql("""
         SELECT
             trial_outcome_by_return as outcome,
@@ -2113,9 +2337,13 @@ def label_trial_outcomes_from_announcement_spike():
 
     conn.close()
 
+    print(f"\n{'='*80}")
+    print(f"LABELING COMPLETE")
+    print(f"{'='*80}")
     print(f"\n✅ Labeled {updated} trials based on actual returns")
     print("\nOutcome Distribution:")
-    print(summary)
+    print(summary.to_string(index=False))
+    print(f"\n{'='*80}\n")
 
     return summary
 
@@ -2353,26 +2581,27 @@ def generate_high_conviction_bet_analysis():
     
     # Get all trials with outcomes
     trials = pd.read_sql("""
-    SELECT 
-        ct.cusip,
-        c.ticker,
-        c.issuer_name_clean as issuer,
-        ct.nct_id,
-        ct.drug_name,
-        ct.indication,
-        ct.phase,
-        ct.primary_completion_date,
-        tsp.entry_to_announcement_return_pct as actual_return_pct,
-        tsp.trial_outcome_by_return as stock_outcome,
-        tsp.price_30d_before as entry_price,
-        tsp.peak_announcement_date
-    FROM clinical_trials ct
-    JOIN companies c ON ct.cusip = c.cusip
-    LEFT JOIN trial_stock_prices tsp ON ct.nct_id = tsp.nct_id
-    WHERE ct.trial_status = 'COMPLETED'
-    AND ct.primary_completion_date IS NOT NULL
-    AND tsp.trial_outcome_by_return IS NOT NULL
-""", conn)
+        SELECT 
+            ct.cusip,
+            c.ticker,
+            c.issuer_name_clean as issuer,
+            ct.nct_id,
+            ct.drug_name,
+            ct.indication,
+            ct.phase,
+            ct.primary_completion_date,
+            tsp.entry_to_announcement_return_pct as actual_return_pct,
+            tsp.trial_outcome_by_return as stock_outcome,
+            tsp.price_30d_before as entry_price,
+            tsp.peak_announcement_date
+        FROM clinical_trials ct
+        JOIN companies c ON ct.cusip = c.cusip
+        LEFT JOIN trial_stock_prices tsp ON ct.nct_id = tsp.nct_id
+        WHERE ct.trial_status = 'COMPLETED'
+        AND ct.primary_completion_date IS NOT NULL
+        AND tsp.trial_outcome_by_return IS NOT NULL
+        AND c.is_biotech = 1
+    """, conn)
 
     """
         SELECT 
@@ -2422,6 +2651,8 @@ def generate_high_conviction_bet_analysis():
     
     # Position size bands
     bands = [
+        (1.5, 2, "1.5-2%"),
+        (2,3,"2-3%"),
         (3, 4, "3-4%"),
         (4, 5, "4-5%"),
         (5, 6, "5-6%"),
@@ -2485,8 +2716,8 @@ def generate_high_conviction_bet_analysis():
             pre_trial = holdings_before.iloc[-1]
             pre_trial_weight = pre_trial['weight_pct']
             
-            # FILTER: Only >3% positions
-            if pre_trial_weight < 3.0:
+            # FILTER: Only >1.5% positions
+            if pre_trial_weight < 1.5:
                 continue
             
             # Find exit date (when position dropped to <1%)
@@ -2495,7 +2726,7 @@ def generate_high_conviction_bet_analysis():
             exit_quarter = None
             
             for _, row in holdings_after.iterrows():
-                if row['weight_pct'] < 1.0:
+                if row['weight_pct'] < 0.9:
                     exit_date = row['report_date']
                     exit_quarter = row['quarter']
                     break
@@ -2747,6 +2978,7 @@ def harvest_upcoming_clinical_trials():
         SELECT cusip, ticker, issuer_name_clean 
         FROM companies 
         WHERE ticker IS NOT NULL
+        AND is_biotech = 1
         ORDER BY ticker
     """, conn)
     
@@ -3028,12 +3260,16 @@ def generate_bayesian_catalyst_analysis():
     """
     Generate Bayesian analysis for upcoming catalysts based on current fund holdings
     
-    Reads directly from fund CSV files to get latest holdings
+    Uses CONVICTION-WEIGHTED Bayesian updating:
+    - Conviction = position_pct / 10 (10% position = 1.0x weight)
+    - Credibility = track record quality (penalizes <3 bets)
+    - Signal weight = conviction × credibility × 100
+    
     For each upcoming catalyst:
     1. Get disease category base rate
     2. Find all funds currently holding ≥3%
     3. Look up their historical success rate at that position band
-    4. Sequentially update probability using weighted average
+    4. Update probability using conviction-weighted signals
     
     Output: Bayes_Score_YYYYMMDD.json
     """
@@ -3070,6 +3306,7 @@ def generate_bayesian_catalyst_analysis():
         JOIN companies c ON ct.cusip = c.cusip
         WHERE ct.is_upcoming = 1
         AND ct.primary_completion_date IS NOT NULL
+        AND c.is_biotech = 1
     """, conn)
     
     conn.close()
@@ -3112,6 +3349,8 @@ def generate_bayesian_catalyst_analysis():
     
     # Position bands (for matching)
     bands = [
+        (1.5, 2, "1.5-2%"),
+        (2,3,"2-3%"),
         (3, 4, "3-4%"),
         (4, 5, "4-5%"),
         (5, 6, "5-6%"),
@@ -3204,12 +3443,11 @@ def generate_bayesian_catalyst_analysis():
         if pd.isna(base_rate) or base_rate == 0:
             base_rate = 0.50  # Fallback
         
-        base_confidence = 100
-        
-        # Sequential Bayesian update
+        # === CONVICTION-WEIGHTED BAYESIAN UPDATE ===
         fund_signals = []
-        current_posterior = base_rate
-        cumulative_confidence = base_confidence
+        prior_weight = 100  # Base rate weight (represents historical disease category data)
+        weighted_sum = base_rate * prior_weight
+        total_weight = prior_weight
         
         for _, holding in stock_holdings.iterrows():
             fund_name = holding['fund_name']
@@ -3226,9 +3464,24 @@ def generate_bayesian_catalyst_analysis():
             if success_rate is None or num_bets is None or num_bets == 0:
                 continue
             
-            # Bayesian update (weighted average)
-            new_posterior = (cumulative_confidence * current_posterior + num_bets * success_rate) / (cumulative_confidence + num_bets)
-            cumulative_confidence += num_bets
+            # 1. Conviction: How much capital at risk? (10% position = 1.0x weight)
+            conviction = position_pct / 10.0
+            
+            # 2. Credibility: Track record quality (penalize small samples)
+            if num_bets < 3:
+                credibility = 0.3  # Low credibility for <3 bets
+            elif num_bets < 10:
+                credibility = (num_bets / 10) ** 0.5  # sqrt scaling for 3-10 bets
+            else:
+                credibility = 1.0  # Full credibility for 10+ bets
+            
+            # 3. Combined signal strength
+            signal_weight = conviction * credibility * 100
+            
+            # 4. Update posterior
+            weighted_sum += success_rate * signal_weight
+            total_weight += signal_weight
+            current_posterior = weighted_sum / total_weight
             
             fund_signals.append({
                 'fund_name': fund_name,
@@ -3236,25 +3489,33 @@ def generate_bayesian_catalyst_analysis():
                 'position_band': band_label,
                 'historical_success_rate': round(success_rate, 3),
                 'historical_bets_in_band': int(num_bets),
-                'posterior_after_this_fund': round(new_posterior, 3)
+                'conviction_weight': round(conviction, 2),
+                'credibility_score': round(credibility, 2),
+                'signal_weight': round(signal_weight, 1),
+                'posterior_after_this_fund': round(current_posterior, 3)
             })
-            
-            current_posterior = new_posterior
         
         if not fund_signals:
             print("✗ No valid fund signals")
             continue
         
+        # Final posterior
+        final_posterior = current_posterior
+        
         # Generate interpretation
-        diff = current_posterior - base_rate
+        diff = final_posterior - base_rate
         if abs(diff) < 0.02:
             interpretation = "Consistent with base rate"
-        elif diff > 0.05:
+        elif diff > 0.10:
             interpretation = f"Significantly above base rate (+{diff*100:.1f}pp) - strong fund confidence"
+        elif diff > 0.05:
+            interpretation = f"Moderately above base rate (+{diff*100:.1f}pp)"
         elif diff > 0:
             interpretation = f"Slightly above base rate (+{diff*100:.1f}pp)"
-        elif diff < -0.05:
+        elif diff < -0.10:
             interpretation = f"Significantly below base rate ({diff*100:.1f}pp) - weak fund confidence"
+        elif diff < -0.05:
+            interpretation = f"Moderately below base rate ({diff*100:.1f}pp)"
         else:
             interpretation = f"Slightly below base rate ({diff*100:.1f}pp)"
         
@@ -3269,15 +3530,16 @@ def generate_bayesian_catalyst_analysis():
             'bayesian_analysis': {
                 'base_rate': round(base_rate, 3),
                 'base_rate_source': f"{catalyst['phase']} {catalyst['disease_category']} historical avg",
-                'base_confidence': base_confidence,
+                'base_confidence': 100,
                 'fund_signals': fund_signals,
-                'final_posterior': round(current_posterior, 3),
+                'final_posterior': round(final_posterior, 3),
                 'interpretation': interpretation,
-                'num_funds_analyzed': len(fund_signals)
+                'num_funds_analyzed': len(fund_signals),
+                'total_signal_weight': round(total_weight - 100, 1)  # Exclude base weight
             }
         }
         
-        print(f"✓ {len(fund_signals)} funds | Base: {base_rate:.1%} → Final: {current_posterior:.1%}")
+        print(f"✓ {len(fund_signals)} funds | Base: {base_rate:.1%} → Final: {final_posterior:.1%}")
     
     # Save to JSON
     output_date = datetime.now().strftime('%Y%m%d')
@@ -3308,6 +3570,673 @@ def generate_bayesian_catalyst_analysis():
     return results
 
 
+
+#18 - Backtest Bayesian Strategy
+def backtest_bayesian_strategy(
+    train_end_date,
+    test_start_date,
+    test_end_date,
+    long_threshold,
+    short_threshold,
+    min_funds,
+    min_sample_size
+):
+    """
+    Backtest Bayesian clinical trial prediction strategy with proper train/test split
+    
+    METHODOLOGY:
+    1. TRAIN: Build fund performance curves from historical trials (before train_end_date)
+    2. TEST: Generate signals on out-of-sample trials (test_start_date to test_end_date)
+    3. No data leakage - only use fund holdings that existed BEFORE each trial
+    
+    Args:
+        train_end_date: End of training period for building fund curves
+        test_start_date: Start of test period
+        test_end_date: End of test period
+        long_threshold: Posterior > base + threshold → LONG
+        short_threshold: Posterior < base - threshold → SHORT
+        min_funds: Minimum funds required to generate signal
+        min_sample_size: Minimum historical bets per fund band
+    
+    Returns:
+        DataFrame with backtest results
+    """
+    
+    # Create Backtest directory if it doesn't exist
+    backtest_dir = PROJECT_ROOT / "Backtest"
+    backtest_dir.mkdir(exist_ok=True)
+    
+    print("\n" + "="*80)
+    print("BACKTESTING BAYESIAN STRATEGY")
+    print("="*80)
+    print(f"\nTRAINING PERIOD: Up to {train_end_date}")
+    print(f"TESTING PERIOD: {test_start_date} to {test_end_date}")
+    print(f"\nParameters:")
+    print(f"  Long threshold: +{long_threshold*100:.0f}pp")
+    print(f"  Short threshold: -{short_threshold*100:.0f}pp")
+    print(f"  Min funds: {min_funds}")
+    print(f"  Min sample size: {min_sample_size}")
+    print("="*80 + "\n")
+    
+    conn = sqlite3.connect(DB_PATH)
+    
+    bands = [
+        (1.5, 2, "1.5-2%"),
+        (2,3,"2-3%"),
+        (3, 4, "3-4%"),
+        (4, 5, "4-5%"),
+        (5, 6, "5-6%"),
+        (6, 7, "6-7%"),
+        (7, 8, "7-8%"),
+        (8, 9, "8-9%"),
+        (9, 10, "9-10%"),
+        (10, 15, "10-15%"),
+        (15, 100, ">15%")
+    ]
+    
+    # ========================================================================
+    # STEP 1: BUILD FUND PERFORMANCE CURVES FROM TRAINING DATA
+    # ========================================================================
+    
+    print("STEP 1: Building fund performance curves from training data...")
+    
+    fund_performance_curves = {}
+    fund_training_stats = []
+    
+    for fund_name, cik in FUNDS.items():
+        # Load individual fund CSV (has ALL holdings across time)
+        fund_csv = base_path / cik / f"{fund_name}.csv"
+        
+        if not fund_csv.exists():
+            continue
+        
+        try:
+            holdings = pd.read_csv(fund_csv)
+            holdings = holdings.dropna(subset=['cusip', 'report_date', 'weight_pct'])
+            holdings['cusip'] = holdings['cusip'].apply(normalize_cusip)
+            holdings['report_date'] = pd.to_datetime(holdings['report_date'], errors='coerce')
+            holdings = holdings.dropna(subset=['report_date'])
+            
+            # Get all completed trials from database (with outcomes) in TRAINING period
+            trials_with_outcomes = pd.read_sql(f"""
+                SELECT 
+                    ct.cusip,
+                    ct.nct_id,
+                    ct.primary_completion_date,
+                    ct.drug_name,
+                    ct.indication,
+                    ct.phase,
+                    tsp.trial_outcome_by_return as stock_outcome
+                FROM clinical_trials ct
+                JOIN trial_stock_prices tsp ON ct.nct_id = tsp.nct_id
+                WHERE ct.trial_status = 'COMPLETED'
+                AND ct.primary_completion_date IS NOT NULL
+                AND ct.primary_completion_date != ''
+                AND ct.primary_completion_date < '{train_end_date}'
+                AND tsp.trial_outcome_by_return IS NOT NULL
+                AND ABS(tsp.entry_to_announcement_return_pct) <= 200
+            """, conn)
+            
+            if trials_with_outcomes.empty:
+                continue
+            
+            # Normalize dates
+            def normalize_date(date_str):
+                if pd.isna(date_str):
+                    return None
+                date_str = str(date_str).strip()
+                if len(date_str) == 7:
+                    return f"{date_str}-01"
+                elif len(date_str) == 4:
+                    return f"{date_str}-01-01"
+                return date_str
+            
+            trials_with_outcomes['primary_completion_date'] = trials_with_outcomes['primary_completion_date'].apply(normalize_date)
+            trials_with_outcomes['primary_completion_date'] = pd.to_datetime(
+                trials_with_outcomes['primary_completion_date'], 
+                errors='coerce'
+            )
+            trials_with_outcomes = trials_with_outcomes.dropna(subset=['primary_completion_date'])
+            
+            # Build training bets for THIS fund
+            training_bets = []
+            
+            for _, trial in trials_with_outcomes.iterrows():
+                cusip = trial['cusip']
+                completion_date = trial['primary_completion_date']
+                
+                # Get fund's holdings of this stock
+                stock_holdings = holdings[holdings['cusip'] == cusip].copy()
+                
+                if stock_holdings.empty:
+                    continue
+                
+                # Must have held BEFORE trial completion
+                holdings_before = stock_holdings[stock_holdings['report_date'] < completion_date]
+                
+                if holdings_before.empty:
+                    continue
+                
+                # Get position in last quarter before trial
+                pre_trial = holdings_before.sort_values('report_date').iloc[-1]
+                pre_trial_weight = pre_trial['weight_pct']
+                
+                # Only ≥3% positions
+                if pre_trial_weight < 1.5:
+                    continue
+                
+                training_bets.append({
+                    'cusip': cusip,
+                    'trial_completion_date': completion_date,
+                    'pre_trial_weight_pct': pre_trial_weight,
+                    'stock_outcome': trial['stock_outcome']
+                })
+            
+            if not training_bets:
+                continue
+            
+            training_df = pd.DataFrame(training_bets)
+            
+            # Calculate performance by position band
+            band_stats = {}
+            
+            for low, high, label in bands:
+                band_bets = training_df[
+                    (training_df['pre_trial_weight_pct'] >= low) &
+                    (training_df['pre_trial_weight_pct'] < high)
+                ]
+                
+                if len(band_bets) >= min_sample_size:
+                    success_count = len(band_bets[band_bets['stock_outcome'] == 'success'])
+                    total_count = len(band_bets)
+                    success_rate = success_count / total_count
+                    
+                    band_stats[label] = {
+                        'success_rate': success_rate,
+                        'num_bets': total_count
+                    }
+                    
+                    fund_training_stats.append({
+                        'fund_name': fund_name,
+                        'position_band': label,
+                        'num_bets': total_count,
+                        'success_count': success_count,
+                        'success_rate': round(success_rate, 3)
+                    })
+            
+            if band_stats:
+                fund_performance_curves[fund_name] = band_stats
+                print(f"  ✓ {fund_name}: {len(band_stats)} bands, {len(training_df)} total bets")
+        
+        except Exception as e:
+            print(f"  ⚠ Error processing {fund_name}: {e}")
+            continue
+    
+    print(f"\n✓ Built performance curves for {len(fund_performance_curves)} funds\n")
+    
+    # Save training curves to CSV
+    if fund_training_stats:
+        training_stats_df = pd.DataFrame(fund_training_stats)
+        training_output = backtest_dir / f"training_curves_{datetime.now().strftime('%Y%m%d')}.csv"
+        training_stats_df.to_csv(training_output, index=False)
+        print(f"📁 Saved training curves to: {training_output}\n")
+    
+    # ========================================================================
+    # STEP 2: GET TEST TRIALS
+    # ========================================================================
+    
+    print("STEP 2: Loading test trials...")
+    
+    test_trials = pd.read_sql(f"""
+        SELECT 
+            ct.cusip,
+            c.ticker,
+            c.issuer_name_clean as company,
+            ct.nct_id,
+            ct.drug_name,
+            ct.indication,
+            ct.disease_category,
+            ct.phase,
+            ct.primary_completion_date,
+            ct.phase3_success_rate as base_rate_phase3,
+            ct.phase2_success_rate as base_rate_phase2,
+            tsp.entry_to_announcement_return_pct as actual_return,
+            tsp.trial_outcome_by_return as actual_outcome,
+            tsp.price_30d_before as entry_price
+        FROM clinical_trials ct
+        JOIN companies c ON ct.cusip = c.cusip
+        JOIN trial_stock_prices tsp ON ct.nct_id = tsp.nct_id
+        WHERE ct.trial_status = 'COMPLETED'
+        AND ct.primary_completion_date >= '{test_start_date}'
+        AND ct.primary_completion_date <= '{test_end_date}'
+        AND ct.primary_completion_date IS NOT NULL
+        AND ct.primary_completion_date != ''
+        AND tsp.trial_outcome_by_return IS NOT NULL
+        AND tsp.entry_to_announcement_return_pct IS NOT NULL
+        AND ABS(tsp.entry_to_announcement_return_pct) <= 200
+        AND c.ticker IS NOT NULL
+        AND c.is_biotech = 1
+        ORDER BY ct.primary_completion_date
+    """, conn)
+    
+    conn.close()
+    
+    print(f"✓ Found {len(test_trials)} test trials\n")
+    
+    if test_trials.empty:
+        print("⚠ No test trials found")
+        return pd.DataFrame()
+    
+    # ========================================================================
+    # STEP 3: GENERATE SIGNALS AND CALCULATE P&L
+    # ========================================================================
+    
+    print("STEP 3: Generating signals and calculating P&L...\n")
+    
+    backtest_results = []
+    signal_details = []
+    
+    for idx, trial in test_trials.iterrows():
+        trial_date = pd.to_datetime(trial['primary_completion_date'])
+        cusip = trial['cusip']
+        
+        # Get fund holdings BEFORE trial
+        fund_positions = []
+        
+        for fund_name, cik in FUNDS.items():
+            if fund_name not in fund_performance_curves:
+                continue
+            
+            fund_csv = base_path / cik / f"{fund_name}.csv"
+            
+            if not fund_csv.exists():
+                continue
+            
+            try:
+                holdings = pd.read_csv(fund_csv)
+                holdings = holdings.dropna(subset=['cusip', 'report_date', 'weight_pct'])
+                holdings['cusip'] = holdings['cusip'].apply(normalize_cusip)
+                holdings['report_date'] = pd.to_datetime(holdings['report_date'], errors='coerce')
+                holdings = holdings.dropna(subset=['report_date'])
+                
+                # Get holdings BEFORE trial
+                stock_holdings = holdings[
+                    (holdings['cusip'] == cusip) &
+                    (holdings['report_date'] < trial_date) &
+                    (holdings['weight_pct'] >= 1.5)
+                ]
+                
+                if stock_holdings.empty:
+                    continue
+                
+                # Most recent position
+                latest = stock_holdings.sort_values('report_date').iloc[-1]
+                position_pct = latest['weight_pct']
+                
+                # Find position band
+                position_band = None
+                for low, high, label in bands:
+                    if low <= position_pct < high:
+                        position_band = label
+                        break
+                
+                if not position_band:
+                    continue
+                
+                # Get performance from TRAINING curves
+                if position_band not in fund_performance_curves[fund_name]:
+                    continue
+                
+                perf = fund_performance_curves[fund_name][position_band]
+                
+                fund_positions.append({
+                    'fund_name': fund_name,
+                    'position_pct': position_pct,
+                    'position_band': position_band,
+                    'success_rate': perf['success_rate'],
+                    'num_bets': perf['num_bets']
+                })
+                
+            except Exception as e:
+                continue
+        
+        # Determine base rate
+        base_rate_phase3 = trial['base_rate_phase3']
+        base_rate_phase2 = trial['base_rate_phase2']
+        
+        if trial['phase'] == 'PHASE3':
+            base_rate = base_rate_phase3
+        elif trial['phase'] == 'PHASE2':
+            base_rate = base_rate_phase2
+        else:
+            if pd.notna(base_rate_phase3) and pd.notna(base_rate_phase2):
+                base_rate = (base_rate_phase3 + base_rate_phase2) / 2
+            elif pd.notna(base_rate_phase3):
+                base_rate = base_rate_phase3
+            elif pd.notna(base_rate_phase2):
+                base_rate = base_rate_phase2
+            else:
+                base_rate = None
+        
+        if pd.isna(base_rate) or base_rate == 0 or base_rate is None:
+            base_rate = 0.50
+        
+        # Calculate Bayesian posterior (CONVICTION-WEIGHTED)
+        prior_weight = 100
+        weighted_sum = base_rate * prior_weight
+        total_weight = prior_weight
+        
+        for pos in fund_positions:
+            conviction = pos['position_pct'] / 10.0
+            
+            if pos['num_bets'] < 3:
+                credibility = 0.3
+            elif pos['num_bets'] < 10:
+                credibility = (pos['num_bets'] / 10) ** 0.5
+            else:
+                credibility = 1.0
+            
+            signal_weight = conviction * credibility * 100
+            
+            weighted_sum += pos['success_rate'] * signal_weight
+            total_weight += signal_weight
+        
+        bayesian_posterior = weighted_sum / total_weight
+        
+        # Generate signal
+        signal = 'PASS'
+        
+        if len(fund_positions) >= min_funds:
+            if bayesian_posterior > base_rate + long_threshold:
+                signal = 'LONG'
+            elif bayesian_posterior < base_rate - short_threshold:
+                signal = 'SHORT'
+        
+        # Calculate P&L
+        actual_return = trial['actual_return'] if not pd.isna(trial['actual_return']) else 0
+        
+        if signal == 'LONG':
+            pnl = actual_return
+        elif signal == 'SHORT':
+            pnl = -actual_return
+        else:
+            pnl = 0
+        
+        # Transaction costs
+        if signal == 'LONG':
+            transaction_cost = -0.3
+        elif signal == 'SHORT':
+            transaction_cost = -1.16
+        else:
+            transaction_cost = 0
+        
+        net_pnl = pnl + transaction_cost
+        
+        backtest_results.append({
+            'trial_date': trial_date.date(),
+            'ticker': trial['ticker'],
+            'company': trial['company'],
+            'drug_name': trial['drug_name'],
+            'indication': trial['indication'],
+            'phase': trial['phase'],
+            'disease_category': trial['disease_category'],
+            'base_rate': round(base_rate, 3),
+            'posterior': round(bayesian_posterior, 3),
+            'diff': round(bayesian_posterior - base_rate, 3),
+            'num_funds': len(fund_positions),
+            'signal': signal,
+            'actual_outcome': trial['actual_outcome'],
+            'actual_return_%': round(actual_return, 1),
+            'gross_pnl_%': round(pnl, 1),
+            'transaction_cost_%': round(transaction_cost, 2),
+            'net_pnl_%': round(net_pnl, 1)
+        })
+        
+        if signal != 'PASS':
+            for pos in fund_positions:
+                signal_details.append({
+                    'trial_date': trial_date.date(),
+                    'ticker': trial['ticker'],
+                    'signal': signal,
+                    'fund_name': pos['fund_name'],
+                    'position_pct': round(pos['position_pct'], 2),
+                    'position_band': pos['position_band'],
+                    'historical_success_rate': round(pos['success_rate'], 3),
+                    'historical_num_bets': pos['num_bets']
+                })
+        
+        if (idx + 1) % 20 == 0:
+            print(f"  [{idx+1}/{len(test_trials)}] Processed")
+    
+    # Convert to DataFrames
+    backtest_df = pd.DataFrame(backtest_results)
+    signal_details_df = pd.DataFrame(signal_details)
+    
+    # Print results
+    print("\n" + "="*80)
+    print("BACKTEST RESULTS")
+    print("="*80)
+    
+    traded = backtest_df[backtest_df['signal'] != 'PASS']
+    
+    if not traded.empty:
+        longs = traded[traded['signal'] == 'LONG']
+        shorts = traded[traded['signal'] == 'SHORT']
+        
+        print(f"\nTotal trials: {len(backtest_df)}")
+        print(f"Signals generated: {len(traded)} ({len(traded)/len(backtest_df)*100:.1f}%)")
+        print(f"  - Long: {len(longs)}")
+        print(f"  - Short: {len(shorts)}")
+        
+        print(f"\nPERFORMANCE (NET OF COSTS):")
+        print(f"  Win rate: {(traded['net_pnl_%'] > 0).sum()/len(traded)*100:.1f}%")
+        print(f"  Avg net P&L: {traded['net_pnl_%'].mean():.1f}%")
+        print(f"  Total net P&L: {traded['net_pnl_%'].sum():.1f}%")
+        print(f"  Sharpe ratio: {traded['net_pnl_%'].mean() / traded['net_pnl_%'].std():.2f}")
+        print(f"  Best trade: {traded['net_pnl_%'].max():.1f}%")
+        print(f"  Worst trade: {traded['net_pnl_%'].min():.1f}%")
+        
+        if not longs.empty:
+            print(f"\nLONG SIGNALS ({len(longs)}):")
+            print(f"  Win rate: {(longs['actual_outcome']=='success').sum()/len(longs)*100:.1f}%")
+            print(f"  Avg return: {longs['net_pnl_%'].mean():.1f}%")
+        
+        if not shorts.empty:
+            print(f"\nSHORT SIGNALS ({len(shorts)}):")
+            print(f"  Win rate: {(shorts['actual_outcome']=='failure').sum()/len(shorts)*100:.1f}%")
+            print(f"  Avg return: {shorts['net_pnl_%'].mean():.1f}%")
+    
+    # Save results
+    output_date = datetime.now().strftime('%Y%m%d')
+    
+    main_output = backtest_dir / f"backtest_results_{output_date}.csv"
+    backtest_df.to_csv(main_output, index=False)
+    print(f"\n📁 Main results: {main_output}")
+    
+    if not signal_details_df.empty:
+        details_output = backtest_dir / f"signal_details_{output_date}.csv"
+        signal_details_df.to_csv(details_output, index=False)
+        print(f"📁 Signal details: {details_output}")
+    
+    summary_stats = {
+        'backtest_date': datetime.now().strftime('%Y-%m-%d'),
+        'train_period': f"Up to {train_end_date}",
+        'test_period': f"{test_start_date} to {test_end_date}",
+        'long_threshold': long_threshold,
+        'short_threshold': short_threshold,
+        'min_funds': min_funds,
+        'total_test_trials': len(backtest_df),
+        'signals_generated': len(traded),
+        'long_signals': len(longs) if not longs.empty else 0,
+        'short_signals': len(shorts) if not shorts.empty else 0,
+        'win_rate_%': round((traded['net_pnl_%'] > 0).sum()/len(traded)*100, 1) if not traded.empty else 0,
+        'avg_net_pnl_%': round(traded['net_pnl_%'].mean(), 1) if not traded.empty else 0,
+        'total_net_pnl_%': round(traded['net_pnl_%'].sum(), 1) if not traded.empty else 0,
+        'sharpe_ratio': round(traded['net_pnl_%'].mean() / traded['net_pnl_%'].std(), 2) if not traded.empty else 0
+    }
+    
+    summary_df = pd.DataFrame([summary_stats])
+    summary_output = backtest_dir / f"backtest_summary_{output_date}.csv"
+    summary_df.to_csv(summary_output, index=False)
+    print(f"📁 Summary stats: {summary_output}")
+    
+    print("="*80 + "\n")
+    
+    return backtest_df
+
+#19b - Portfolio-Level Statistics (More Realistic)
+def calculate_portfolio_level_statistics(backtest_csv_path=None, position_size=0.025, max_concurrent=40):
+    """
+    Calculate realistic portfolio-level statistics
+    
+    Assumes you run this as a portfolio strategy with multiple concurrent positions,
+    not as a single sequential strategy.
+    
+    Args:
+        backtest_csv_path: Path to backtest CSV
+        position_size: Size of each position (default 2.5% = 40 max positions)
+        max_concurrent: Maximum concurrent positions (default 40)
+    
+    Returns:
+        Dictionary with portfolio-level statistics
+    """
+    import numpy as np
+    
+    print("\n" + "="*80)
+    print("PORTFOLIO-LEVEL STATISTICS (REALISTIC)")
+    print("="*80 + "\n")
+    
+    # Load backtest
+    if backtest_csv_path is None:
+        backtest_dir = PROJECT_ROOT / "Backtest"
+        csv_files = list(backtest_dir.glob("backtest_results_*.csv"))
+        if not csv_files:
+            print("⚠ No backtest CSV found")
+            return None
+        backtest_csv_path = max(csv_files, key=lambda p: p.stat().st_mtime)
+    
+    backtest_df = pd.read_csv(backtest_csv_path)
+    traded = backtest_df[backtest_df['signal'] != 'PASS'].copy()
+    traded['trial_date'] = pd.to_datetime(traded['trial_date'])
+    traded = traded.sort_values('trial_date')
+    
+    returns = traded['net_pnl_%'].values / 100
+    
+    # Time period
+    start_date = traded['trial_date'].min()
+    end_date = traded['trial_date'].max()
+    years = (end_date - start_date).days / 365.25
+    
+    print(f"Assumptions:")
+    print(f"  Position size: {position_size*100:.1f}% per trade")
+    print(f"  Max concurrent positions: {max_concurrent}")
+    print(f"  Period: {start_date.date()} to {end_date.date()} ({years:.1f} years)")
+    print(f"  Total signals: {len(traded)}\n")
+    
+    # Portfolio-level return per trade
+    portfolio_returns_per_trade = returns * position_size
+    
+    # Aggregate by month (assuming overlapping positions)
+    traded['year_month'] = traded['trial_date'].dt.to_period('M')
+    monthly_returns = traded.groupby('year_month')['net_pnl_%'].apply(
+        lambda x: (x / 100 * position_size).sum()
+    )
+    
+    # Calculate statistics on monthly returns
+    monthly_mean = monthly_returns.mean()
+    monthly_std = monthly_returns.std()
+    
+    # Annualize
+    annual_return = monthly_mean * 12
+    annual_volatility = monthly_std * np.sqrt(12)
+    sharpe_ratio = annual_return / annual_volatility if annual_volatility > 0 else 0
+    
+    # CAGR from monthly compounding
+    monthly_cagr = (1 + monthly_returns).prod() ** (1 / len(monthly_returns)) - 1
+    annual_cagr = (1 + monthly_cagr) ** 12 - 1
+    
+    # Max drawdown on monthly portfolio level
+    cumulative_portfolio = (1 + monthly_returns).cumprod()
+    running_max = np.maximum.accumulate(cumulative_portfolio)
+    drawdown = (cumulative_portfolio - running_max) / running_max
+    max_drawdown = drawdown.min()
+    
+    # Win rate and profit factor (same as before)
+    win_rate = (returns > 0).sum() / len(returns)
+    winners = returns[returns > 0]
+    losers = returns[returns < 0]
+    avg_win = winners.mean() if len(winners) > 0 else 0
+    avg_loss = losers.mean() if len(losers) > 0 else 0
+    profit_factor = abs(winners.sum() / losers.sum()) if len(losers) > 0 and losers.sum() != 0 else np.inf
+    
+    # Calmar ratio
+    calmar_ratio = annual_cagr / abs(max_drawdown) if max_drawdown != 0 else 0
+    
+    # Expected value per trade (portfolio level)
+    ev_per_trade = portfolio_returns_per_trade.mean()
+    
+    stats = {
+        'position_size_%': position_size * 100,
+        'max_concurrent_positions': max_concurrent,
+        'years': round(years, 2),
+        'total_trades': len(traded),
+        'trades_per_year': round(len(traded) / years, 1),
+        
+        'monthly_mean_return_%': round(monthly_mean * 100, 2),
+        'monthly_volatility_%': round(monthly_std * 100, 2),
+        
+        'annual_return_%': round(annual_return * 100, 2),
+        'annual_volatility_%': round(annual_volatility * 100, 2),
+        'cagr_%': round(annual_cagr * 100, 2),
+        
+        'sharpe_ratio': round(sharpe_ratio, 3),
+        'max_drawdown_%': round(max_drawdown * 100, 2),
+        'calmar_ratio': round(calmar_ratio, 3),
+        
+        'win_rate_%': round(win_rate * 100, 2),
+        'avg_win_%': round(avg_win * 100, 2),
+        'avg_loss_%': round(avg_loss * 100, 2),
+        'profit_factor': round(profit_factor, 2) if profit_factor != np.inf else 'Inf',
+        
+        'expected_value_per_trade_%': round(ev_per_trade * 100, 3),
+        'expected_value_per_year_%': round(ev_per_trade * len(traded) / years * 100, 2)
+    }
+    
+    print(f"{'='*80}")
+    print("PORTFOLIO PERFORMANCE")
+    print(f"{'='*80}\n")
+    
+    print(f"Monthly Returns:")
+    print(f"  Mean: {stats['monthly_mean_return_%']:>8.2f}%")
+    print(f"  Volatility: {stats['monthly_volatility_%']:>8.2f}%")
+    
+    print(f"\nAnnualized Performance:")
+    print(f"  Annual return: {stats['annual_return_%']:>8.2f}%")
+    print(f"  Annual volatility: {stats['annual_volatility_%']:>8.2f}%")
+    print(f"  CAGR: {stats['cagr_%']:>8.2f}%")
+    
+    print(f"\nRisk Metrics:")
+    print(f"  Sharpe ratio: {stats['sharpe_ratio']:>8.3f}")
+    print(f"  Max drawdown: {stats['max_drawdown_%']:>8.2f}%")
+    print(f"  Calmar ratio: {stats['calmar_ratio']:>8.3f}")
+    
+    print(f"\nTrade Statistics:")
+    print(f"  Win rate: {stats['win_rate_%']:>8.2f}%")
+    print(f"  Avg win: {stats['avg_win_%']:>8.2f}%")
+    print(f"  Avg loss: {stats['avg_loss_%']:>8.2f}%")
+    print(f"  Profit factor: {stats['profit_factor']}")
+    
+    print(f"\nExpected Value:")
+    print(f"  Per trade (portfolio level): {stats['expected_value_per_trade_%']:>8.3f}%")
+    print(f"  Per year (portfolio level): {stats['expected_value_per_year_%']:>8.2f}%")
+    
+    print(f"\n{'='*80}\n")
+    
+    return stats
+
+
+
+
 if __name__ == '__main__':
     #1. Load environment variables
     load_dotenv() 
@@ -3320,6 +4249,9 @@ if __name__ == '__main__':
     
     #4. master sheet
     master_table = master_set(base_path)
+
+    #4.5 Needs to ensure backtest has data.
+    populate_fund_holdings_database()
 
     #5. Create database for clinical trial storage
     setup_database()
@@ -3336,41 +4268,62 @@ if __name__ == '__main__':
     export_companies_for_ticker_entry()
 
     #9. Imports ticker symbols, so Step 12. can create yfinance for each company.
-    import_tickers_from_csv()
+    #import_tickers_from_csv()
 
     #10. Downloads last 10 years stock information from each firm.
-    download_10y_price_history_for_all_tickers()
+    #download_10y_price_history_for_all_tickers()
 
     #10.5 get_stock_price_around_catalyst_from_cache() is a helper function to get 11 to work.
 
     #11. Fetches stock prices and matches to trial date
-    fetch_historical_stock_prices_for_trials()
+    #fetch_historical_stock_prices_for_trials()
 
     #11.5 Feeder to help 12. get_peak_daily_move_in_announcement_window
 
     #12. Labels trial outcome (success or fail based on ±10% movement 30-210 days after trial).
-    label_trial_outcomes_from_announcement_spike()
+    #label_trial_outcomes_from_announcement_spike()
 
     #13 - Generates FULL BETTING history for each fund - generating bet_tracker.csv
-    generate_fund_bet_trackers()
+    #generate_fund_bet_trackers()
 
     #14 - Generates 1 csv high_conviction_bet_history.csv per fund (>3% holding), and 1 JSON summary (high_conviction_performance.json).
-    generate_high_conviction_bet_analysis()
+    #generate_high_conviction_bet_analysis()
 
     #14.5 Helper Function - Classify Disease Category classify_disease_category()
 
     #15 - Scrapes PFUDA calendar (backend FDAtracker.com google calendar API to get up to date calendar dates)
-    harvest_pdufa_dates()
+    #harvest_pdufa_dates()
 
     #16 - Query ClinicalTrial.gov for upcoming Phase 2, Phase 2/3, Phase 3 clinical trials for companies with tickers. generate_catalyst_calendar() generates CSV.
-    harvest_upcoming_clinical_trials()
-    generate_catalyst_calendar()
+    #harvest_upcoming_clinical_trials()
+    #generate_catalyst_calendar()
 
     #17 Final step, JSON generater in Fixed_Biotech/JSON - with historic likelihood, Bayes updator for each fund holding, based on conviction (% of portfolio), and implied success.
-    generate_bayesian_catalyst_analysis()
+    #generate_bayesian_catalyst_analysis()
+
+    #18 Backtester
+    # 18 is backtester that creates the CSV's but this can be called in #19 as backtest_df = backtest_bayesian
+    #18 also doesn't contain any dates, so that can be configured below, in #19.
+
+    #19 Backtester
+    """backtest_df = backtest_bayesian_strategy(
+    train_end_date='2018-03-30',
+    test_start_date='2019-04-01',
+    test_end_date='2026-01-16',
+    long_threshold=0.0001,      # 2pp above base
+    short_threshold=0.50,     # 15pp below base
+    min_funds=1,              # Single fund can trigger signal
+    min_sample_size=1         # Accept even 1 historical bet
+    )
+
+    stats_realistic = calculate_portfolio_level_statistics(
+    position_size=0.02,  # 2% per position
+    max_concurrent=50     # Up to 50 positions at once
+    )"""
+    #Remove the """ in #19 to run it.
+
 
     #SUCCESS
-
 """ INSTRUCTIONS
 QUARTERLY (Every 13 weeks - after new 13F filings)
 #2. file_downloader()          # Download new 13F filings
