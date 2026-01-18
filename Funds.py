@@ -1,4 +1,3 @@
-#FUNDS.py
 from pathlib import Path
 import re
 import time
@@ -4238,6 +4237,7 @@ def calculate_portfolio_level_statistics(backtest_csv_path=None, position_size=0
 
 
 if __name__ == '__main__':
+
     #1. Load environment variables
     load_dotenv() 
     
@@ -4301,26 +4301,27 @@ if __name__ == '__main__':
     #17 Final step, JSON generater in Fixed_Biotech/JSON - with historic likelihood, Bayes updator for each fund holding, based on conviction (% of portfolio), and implied success.
     #generate_bayesian_catalyst_analysis()
 
+#Backtesting - Delete the """ to use it.
+"""
     #18 Backtester
     # 18 is backtester that creates the CSV's but this can be called in #19 as backtest_df = backtest_bayesian
     #18 also doesn't contain any dates, so that can be configured below, in #19.
 
     #19 Backtester
-    """backtest_df = backtest_bayesian_strategy(
-    train_end_date='2018-03-30',
-    test_start_date='2019-04-01',
+    backtest_df = backtest_bayesian_strategy(
+    train_end_date='2021-03-30',
+    test_start_date='2021-04-01',
     test_end_date='2026-01-16',
     long_threshold=0.0001,      # 2pp above base
     short_threshold=0.50,     # 15pp below base
-    min_funds=1,              # Single fund can trigger signal
-    min_sample_size=1         # Accept even 1 historical bet
+    min_funds=2,              # Single fund can trigger signal
+    min_sample_size=2         # Accept even 1 historical bet
     )
 
     stats_realistic = calculate_portfolio_level_statistics(
     position_size=0.02,  # 2% per position
     max_concurrent=50     # Up to 50 positions at once
     )"""
-    #Remove the """ in #19 to run it.
 
 
     #SUCCESS
