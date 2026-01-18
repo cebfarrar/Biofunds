@@ -1,690 +1,212 @@
-# Biofunds: Systematic Biotech Clinical Trial Arbitrage
+# Biofunds: Following Smart Money in Biotech Clinical Trials
 
-> "In the short run, the market is a voting machine, but in the long run, it is a weighing machine."  
-> — Benjamin Graham
+## What This Does
 
-## Abstract
+Tracks what biotech-only hedge funds are betting on and attempts to profit from their positioning. The basic premise is wisdom of the crowd applied to hedge funds, whose conviction (percentage concentration of their fund in a single Phase 2/3 trial), signals confidence in approval, and using an aggregate of all of their bets, to benefit from their scientific understanding. 
 
-This repository implements a quantitative strategy for identifying mispriced clinical trial outcomes in biotechnology equities by synthesizing fundamental valuation analysis, institutional positioning data, and historical clinical trial success rates. The core thesis posits that markets systematically misprice binary clinical events due to information asymmetry and the principal-agent problem, creating exploitable arbitrage opportunities when elite biotech hedge funds signal high conviction through concentrated portfolio positions.
+## The Idea
 
-## Table of Contents
+Biotech markets systematically misprice binary clinical events. A Phase 3 trial either works or it doesn't, but the market often gets the probability wrong. Meanwhile, specialist funds with PhDs on staff and years of experience are taking concentrated bets.
 
-- [Introduction](#introduction)
-- [Theoretical Foundation](#theoretical-foundation)
-- [Methodology](#methodology)
-- [Implementation](#implementation)
-- [Example Analysis: Ardelyx](#example-analysis-ardelyx)
-- [Bayesian Framework](#bayesian-framework)
-- [Data Sources](#data-sources)
-- [Installation](#installation)
-- [Contributing](#contributing)
-- [Disclaimer](#disclaimer)
+## Three-Step Process
 
-## Introduction
+### 1. What's the market pricing in?
 
-### Market Inefficiency Hypothesis
+For any biotech approaching a readout, you can calculate what probability the current stock price implies.
 
-Public equity markets demonstrate systematic mispricing of clinical trial catalyst events, contrary to the Efficient Market Hypothesis (EMH). This inefficiency arises from:
+**Success case:** Company gets approval, captures market share, generates cash flows. I run a DCF with realistic assumptions (TAM, market penetration, margins, multiples). I Get a price target.
 
-1. **Information Asymmetry**: Scientific and clinical expertise is not uniformly distributed among market participants
-2. **Principal-Agent Problem**: Retail investors rely on intermediaries who may lack domain expertise in drug development
-3. **Limited Arbitrage**: Regulatory constraints and risk management frameworks prevent full price discovery
+**Failure case:** Trial fails, company burns through cash, eventually liquidates or gets acquired for intellectual property pipeline. Calculate liquidation value (cash + salvageable assets - liabilities).
 
-In a perfectly efficient market, scientifically sophisticated investors would arbitrage away any predictable mispricings. The persistent existence of post-event corrections suggests structural market inefficiency.
-
-![Clinical Trial Price Discovery]
-<img width="906" height="461" alt="Screenshot 2026-01-14 at 16 44 49" src="https://github.com/user-attachments/assets/6cc6f808-0498-4a0d-b6c5-5a5ba5f8ab97" />
-*Figure 1: Market price discovery around clinical trial catalyst events demonstrates systematic under-reaction to positive outcomes and over-reaction to negative outcomes.*
-
-## Theoretical Foundation
-
-### Core Investment Thesis
-
-The strategy identifies mispriced securities through a three-dimensional analysis:
-
-1. **Fundamental Valuation**: Deriving market-implied probabilities through discounted cash flow (DCF) analysis
-2. **Smart Money Positioning**: Tracking portfolio concentration of elite biotech-focused hedge funds as a signal of asymmetric information
-3. **Clinical Evidence**: Incorporating phase-specific, indication-specific historical success rates
-
-**Exploitable Opportunity Criteria:**
-
-An investment opportunity exists when:
-
-```
-P(success | smart money) > P(success | market-implied) + risk premium
-```
-
-Where:
-- `P(success | smart money)` is derived from historical fund performance at similar concentration levels
-- `P(success | market-implied)` is extracted from fundamental analysis
-- Risk premium accounts for execution risk, commercial uncertainty, and funding risk
-
-## Methodology
-
-### 1. Market-Implied Probability Calculation
-
-For each clinical stage company, we calculate what probability of success the market is currently pricing through a scenario analysis framework:
-
-#### Step 1: Define Success Scenario Value
-
-Calculate enterprise value under approval scenario:
-
-```
-Peak Revenue = TAM × Market Share × Price per Patient × Treatment Duration
-EBITDA = Peak Revenue × Gross Margin - Operating Expenses
-Enterprise Value (Success) = EBITDA × Sector Multiple
-Equity Value (Success) = EV + Cash - Debt
-Price per Share (Success) = Equity Value / Shares Outstanding
-```
-
-#### Step 2: Define Failure Scenario Value
-
-Calculate liquidation value:
-
-```
-Tangible Asset Value = Cash + Marketable Securities + Equipment (40% book) + Facilities (lease buyout)
-Total Liabilities = Debt + Operating Liabilities
-Equity Value (Failure) = max(TAV - Total Liabilities, 0)
-Price per Share (Failure) = Equity Value (Failure) / Shares Outstanding
-```
-
-#### Step 3: Extract Implied Probability
-
-Using current market price:
-
+**Current price sits between these.**:
 ```
 P(success) = (Current Price - Failure Value) / (Success Value - Failure Value)
 ```
 
-This represents the market's assessment of the **full success path**: Phase III approval × FDA approval × successful commercialization × market share capture.
+This gives you the market's implied probability of the full success path: Phase 3 works AND FDA approves AND commercial launch succeeds AND company doesn't go bankrupt.
 
-#### Step 4: Decompose to Phase-Specific Probability
+To isolate just Phase 3 probability, divide out the downstream steps using industry benchmarks (~85% FDA approval post-Phase 3, ~90% commercial execution, ~96% no bankruptcy).
 
-To isolate Phase III success probability:
+### 2. What do the smart funds think?
 
+I have scrape quarterly 13F filings for 52 specialist biotech funds. Position size = conviction:
+
+- 3-5% of fund: Did real work, believes in it
+- 5-7%: High conviction, extensive diligence  
+- 7%+: Very high conviction, probably proprietary edge
+
+Track their historical performance at each concentration level. OrbiMed at 5%+ positions: 219 bets over 12 years, hit ~65% vs 50-60% base rates.
+
+### 3. Update your probability
+
+Start with disease-specific base rates from historical data:
+- Oncology Phase 3: ~48%
+- Nephrology: ~59%
+- Rare disease: ~70%
+- Ophthalmology: ~51%
+
+When a fund with a strong track record takes a 6% position, update the likelihood based on their prior success rate in that conviction band (5-6%). If market implies 31% and your posterior comes out to 63%, that's a +32 percentage point edge!
+
+## Real Numbers (April 2019 - January 2026)
+
+Trained on fund positioning data from Q4 2005 through March 2018. Tested from April 2019 through January 2026 (6.7 years covering both the 2021-2023 biotech winter and 2024-2025 recovery).
+
+**What happened:**
+- Screened 2,674 completed clinical trials
+- Generated 1,193 position signals (44.6% of opportunities)
+- All long bias (0 shorts— I have assumed it's too expensive for Biotech funds to short individual drug pipelines, if it costs 20% for a 
+- Individual trade win rate: 48.4%
+- Average trade: +3.8% (after transaction costs)
+- Best single trade: +198.5%
+- Worst: -93.2%
+
+**Portfolio level (assuming 2% position sizing, up to 50 concurrent):**
+- CAGR: 11.9%
+- Sharpe ratio: 0.64
+- Max drawdown: -36.6%
+- Correlation to S&P 500: 0.08
+
+The 36.6% drawdown hit during the 2021-2022 biotech bear market when multiple trials failed in succession. XBI (biotech ETF) fell 60% in that window—strategy held up better but still brutal.
+
+Win rate under 50% but profitable because winners (+34% avg) significantly outsize losers (-25% avg). Profit factor 1.3x.
+
+## How It Actually Works
+
+52 funds tracked, each with 1-7 position size "bands" based on historical performance:
 ```
-P(Phase III) = P(full success) / [P(FDA | Phase III) × P(commercial success | FDA approval) × P(no default)]
-```
-
-Using industry benchmarks:
-- P(FDA | Phase III) ≈ 85-90% (varies by indication)
-- P(commercial success | FDA) ≈ 90%
-- P(no default) ≈ 96%
-
-### 2. Institutional Signal Analysis
-
-Track 13F filings of elite biotech hedge funds:
-
-**Conviction Metrics:**
-- **Position Size**: % of fund AUM allocated to single position
-- **Portfolio Concentration**: Top 10 holdings as % of total AUM
-- **Entry Timing**: Quarters prior to catalyst event
-- **Historical Performance**: Success rate at similar concentration levels
-
-**Elite Fund Cohort:**
-- Baker Brothers Advisors
-- Perceptive Advisors
-- OrbiMed Advisors
-- RA Capital Management
-- Deerfield Management
-- Longitude Capital
-
-### 3. Bayesian Probability Framework
-
-Update prior beliefs using Bayes' theorem:
-
-```
-P(success | fund signal, clinical data) = [P(fund signal | success) × P(success)] / P(fund signal)
-```
-
-Where:
-- **Prior**: Historical phase-specific, indication-specific success rate
-- **Likelihood**: Conditional probability of fund taking position given success
-- **Posterior**: Updated probability incorporating all information
-
-## Implementation
-
-### Project Structure
-
-```
-biofunds/
-├── data/
-│   ├── 13f_filings/          # Institutional holdings data
-│   ├── clinical_trials/       # Historical trial outcomes
-│   ├── financials/            # Company financial data
-│   └── market_data/           # Price and volume data
-├── src/
-│   ├── analysis/
-│   │   ├── dcf_model.py      # Fundamental valuation
-│   │   ├── implied_prob.py    # Market probability extraction
-│   │   └── bayesian.py        # Bayesian updating framework
-│   ├── data_collection/
-│   │   ├── sec_scraper.py     # 13F filing collection
-│   │   ├── trial_data.py      # Clinical trial database
-│   │   └── market_feeds.py    # Price data collection
-│   ├── signals/
-│   │   ├── fund_tracker.py    # Institutional position analysis
-│   │   └── conviction.py      # Conviction metric calculation
-│   └── portfolio/
-│       ├── optimizer.py       # Kelly criterion position sizing
-│       └── risk_manager.py    # Portfolio risk controls
-├── tests/
-├── notebooks/                 # Research and backtesting
-└── docs/                      # Extended documentation
+OrbiMed: 5 bands, 219 training bets → reliable signal across 3-10% positions
+Redmile: 5 bands, 150 bets → strong at 4-6% 
+Baker Bros: 4 bands, 44 bets → excellent at 6%+
+Sarissa: 3 bands, 197 bets → broad coverage
 ```
 
-### Core Modules
+For each upcoming catalyst, check:
+1. Which funds hold it at 1.5%+?
+2. What's their historical success rate in that position band?
+3. How many bets in training data? (penalize funds with <10 for credibility)
 
-**`dcf_model.py`**: Implements scenario-based valuation
-```python
-def calculate_success_value(
-    tam: float,
-    market_share: float,
-    price_per_patient: float,
-    gross_margin: float,
-    ebitda_multiple: float,
-    cash: float,
-    debt: float,
-    shares_outstanding: float
-) -> float:
-    """
-    Calculate equity value per share under approval scenario.
-    
-    Returns:
-        Price per share assuming successful commercialization
-    """
+Conviction-weighted update:
+```
+Weight = (position_pct / 10) × credibility_score × 100
+Posterior = (base_rate × 100 + Σ(fund_success_rate × weight)) / (100 + Σ(weight))
 ```
 
-**`implied_prob.py`**: Extracts market-implied probabilities
-```python
-def extract_implied_probability(
-    current_price: float,
-    success_value: float,
-    failure_value: float
-) -> float:
-    """
-    Calculate market-implied probability of success.
-    
-    Returns:
-        Probability [0,1] that market is pricing in
-    """
+Signal triggers when posterior diverges significantly from market-implied probability:
+- Long: posterior > market + threshold
+- Short: posterior < market - threshold (rare in practice)
+
+## Example Walkthrough
+
+**Company X:** Phase 3 nephrology readout Q2 2026
+
+**Market data:**
+- Current price: $30
+- Success scenario DCF: $121 (assuming approval, market penetration, 10x EBITDA multiple - usual multiple is 8-20x)
+- Failure liquidation: $0.75 (cash + salvage - liabilities)
+
+**Implied probability:**
+```
+P(full path) = ($30 - $0.75) / ($121 - $0.75) = 24.4%
+P(Phase 3) = 24.4% / (0.85 × 0.90 × 0.96) = 31.4%
 ```
 
-**`fund_tracker.py`**: Analyzes institutional positioning
-```python
-def calculate_conviction_metrics(
-    fund_name: str,
-    ticker: str,
-    filing_date: date
-) -> Dict[str, float]:
-    """
-    Calculate position sizing metrics for fund and ticker.
-    
-    Returns:
-        Dictionary containing position_pct, rank, concentration, etc.
-    """
+**Fund positioning:**
+- Baker Bros: 6.2% position, entered Q2 2025
+- Historical at 6%+: 68% success rate (38 bets)
+
+**Base rate:** 58.6% (nephrology Phase 3 historical average)
+
+**Bayesian posterior:** Blend base rate with fund signal weighted by position size and track record → 63%
+
+**Expected value:**
+```
+EV = 0.63 × ($121 - $30) + 0.37 × ($0.75 - $30)
+   = 0.63 × $91 + 0.37 × (-$29.25)
+   = $57.33 - $10.82
+   = +$46.51 per share = +155%
 ```
 
-**`bayesian.py`**: Implements probability updating
-```python
-def bayesian_update(
-    prior: float,
-    likelihood: float,
-    evidence_prob: float
-) -> float:
-    """
-    Update probability using Bayes' theorem.
-    
-    Args:
-        prior: Base rate probability
-        likelihood: P(signal | success)
-        evidence_prob: P(signal)
-    
-    Returns:
-        Posterior probability
-    """
+Quarter-Kelly sizing: ~4% of portfolio.
+
+## What This Taught Me
+
+**Fund track records matter.** OrbiMed with 219 training bets gives much stronger signal than EcoR1 with 3 bets. The system explicitly penalizes low-sample funds through credibility scoring.
+
+**Position size is predictive.** Funds at 7%+ concentration hit ~73% vs ~58% at 3-5%. They're genuinely better at picking when they bet big.
+
+**Base rates are harder than expected.** Disease classification matters enormously—calling something "oncology" (48% success) vs "hematology" (69%) changes the calculation. Spent a while tuning the disease category dictionary.
+
+**Transaction costs hurt.** Modeled 0.3% spread on longs, 1.16% on shorts (2% annual borrow × 120 days + 0.5% spread). Real costs are probably higher for small accounts.
+
+**Win rate doesn't matter as much as payoff ratio.** 48% win rate with 1.3x profit factor still makes money. The winners run far (avg +34%) while losers cap out around -25% due to stop losses.
+
+## Limitations
+
+This backtest covers 6.7 years including one long bear market 2021-2023. No idea if it works going forward, but it was a lot of fun! Some issues:
+
+**Fund survivorship:** Only tracked funds that still exist today (filing 13Fs through 2025). Dead funds from 2005-2015 aren't included—they might have worse track records. Probably adds optimistic bias.
+
+**13F lag:** Filings are 45 days delayed and quarterly. By the time you see a position, catalyst might be 2-3 months closer. Sometimes funds have already exited. But catalyst dates are public information.
+
+**Hidden positions:** Funds can use derivatives, file for confidential treatment, or hold positions under $200k not disclosed in 13Fs. You're seeing incomplete data.
+
+**Regime dependency:** 2019-2026 covered both bull and bear markets, but FDA approval standards could tighten, biotech funding could dry up permanently, or funds' edge could erode as more people track them.
+
+**No short book:** Most biotech funds don't short extensively. Strategy is naturally long-biased which means difficulty in bear markets.
+
+**Sample size:** 1,193 trades over 6.7 years = ~180/year. A few lucky/unlucky years could swing results significantly.
+
+I have no idea if this actually works with real money. Backtest looks ok but there's probably overfitting I didn't catch.
+
+## Data Pipeline
+
+**Clinical trials:** ClinicalTrials.gov API (33k+ biotech trials)  
+**Historical outcomes:** Manually labeled from trial completion dates + stock price moves  
+**Success rates:** BIO Industry Analysis reports (2006-2024)  
+**Fund holdings:** SEC EDGAR 13F filings (automated downloader)  
+**Prices:** Yahoo Finance API (20 years daily history)  
+**Company financials:** 10-K/10-Q for DCF inputs
+
+Database is SQLite with ~34k trials, 17k with outcomes, 398 with missing dates (dropped from analysis).
+
+## Files
+```
+Funds.py              # Main pipeline (13F scraper, database, backtest)
+biotech_intelligence.db   # SQLite database
+/Backtest/            # Results CSVs
+/sec-edgar-filings/   # Raw 13F XML files by fund
+master.csv            # Aggregated current holdings
 ```
 
-## Example Analysis: Ardelyx
+Key functions:
+- `populate_clinical_trials_database()` - Scrapes ClinicalTrials.gov
+- `label_trial_outcomes_from_announcement_spike()` - Labels success/failure from price moves
+- `generate_high_conviction_bet_analysis()` - Builds fund track records by position band
+- `backtest_bayesian_strategy()` - Full train/test split backtest
 
-### Company Overview
-
-**Ticker**: ARDX  
-**Catalyst**: Phase III results for once-daily hyperphosphatemia treatment in dialysis patients  
-**Date**: [Anticipated Q2 2026]
-
-### Step 1: Fundamental Valuation
-
-#### Success Scenario
-
-**Market Sizing:**
-```
-US dialysis patients:                    500,000
-With hyperphosphatemia:                  400,000  (80% prevalence)
-Annual treatment cost:                   $5,000/patient
-Total addressable market:                $2.0B
-```
-
-**Market Share Assumptions:**
-```
-Competitive advantage:      Once-daily vs 3× daily competitors
-Market position:            6th entrant in established market
-Conservative market share:  15%
-Target patients:            60,000
-```
-
-**Revenue Projection:**
-```
-Peak annual revenue = 60,000 × $5,000 = $300M
-Time to peak: 5 years
-Revenue ramp: Linear
-```
-
-**Valuation:**
-```
-Gross margin:               80% (biotech industry standard)
-EBITDA:                     $240M ($300M × 0.80)
-EV/EBITDA multiple:         10× (conservative for established biotech)
-Enterprise value:           $2.4B
-
-+ Cash:                     $15M
-- Debt:                     $5M
-= Equity value:             $2.41B
-÷ Shares outstanding:       20M
-= Success price/share:      $120.50
-```
-
-#### Failure Scenario
-
-**Liquidation Analysis:**
-```
-Cash & equivalents:         $10M
-Marketable securities:      $5M
-Equipment (40% of book):    $3M
-Facilities (lease buyout):  $2M
-IP portfolio (residual):    $7.1M
-─────────────────────────────────
-Total assets:               $27.1M
-
-Total liabilities:          $12.6M
-─────────────────────────────────
-Net liquidation value:      $14.5M
-÷ Shares outstanding:       20M
-= Failure price/share:      $0.73
-```
-
-### Step 2: Market-Implied Probability
-
-**Current Market Data:**
-```
-Current price:              $30.00/share
-Success scenario:           $120.50/share
-Failure scenario:           $0.75/share
-```
-
-**Calculation:**
-```
-P(full success) = ($30.00 - $0.75) / ($120.50 - $0.75)
-                = $29.25 / $119.75
-                = 24.4%
-```
-
-### Step 3: Decomposition to Phase III Probability
-
-The 24.4% market-implied probability represents the **full success pathway**:
-
-```
-P(full success) = P(Phase III) × P(FDA | Phase III) × P(commercial | FDA) × P(no default)
-
-24.4% = P(Phase III) × 90% × 90% × 96%
-
-P(Phase III) = 24.4% / (0.90 × 0.90 × 0.96)
-             = 24.4% / 77.8%
-             = 31.4%
-```
-
-**Interpretation:** The market is pricing in only a 31.4% probability of Phase III success, significantly below the historical base rate for nephrology Phase III trials (58.6%).
-
-### Step 4: Institutional Signal Analysis
-
-**Baker Brothers Advisors Position:**
-```
-Position size:              6.2% of fund AUM
-Entry date:                 Q2 2025 (4 quarters before catalyst)
-Historical performance:     At >5% position sizes
-  - Total bets:             38
-  - Successes:              26
-  - Failures:               6
-  - Neutral outcomes:       6
-  - Success rate:           68.4%
-  - Average gain on success: +29.3%
-```
-
-**Conviction Signal:**
-- Position size >5% indicates high conviction
-- Historical edge in clinical/scientific analysis
-- 68.4% success rate significantly exceeds base rates
-
-### Step 5: Bayesian Update
-
-**Inputs:**
-```
-Prior (base rate):          58.6% (nephrology Phase III historical)
-Likelihood:                 68.4% (Baker Bros hit rate at 6%+ positions)
-Market-implied:             31.4%
-```
-
-**Posterior Calculation:**
-
-Assuming Baker Bros' historical success is attributable to analytical edge:
-
-```
-P(success | BB position) ≈ weighted average of prior and likelihood
-                        ≈ 0.6 × 58.6% + 0.4 × 68.4%
-                        ≈ 62.5%
-```
-
-**Edge Calculation:**
-```
-Posterior probability:      62.5%
-Market-implied probability: 31.4%
-Edge:                       +31.1 percentage points
-```
-
-**Expected Value:**
-
-At current price of $30:
-
-```
-EV = P(success) × (Success Value - Entry) + P(failure) × (Failure Value - Entry)
-   = 0.625 × ($120.50 - $30) + 0.375 × ($0.75 - $30)
-   = 0.625 × $90.50 + 0.375 × (-$29.25)
-   = $56.56 - $10.97
-   = +$45.59 per share
-   = +152% expected return
-```
-
-**Decision:** Strong buy signal. The market appears to be significantly under-pricing the probability of Phase III success.
-
-## Bayesian Framework
-
-### Mathematical Foundation
-
-The strategy employs Bayesian inference to update probabilities as new information becomes available:
-
-**Bayes' Theorem:**
-```
-P(H|E) = [P(E|H) × P(H)] / P(E)
-```
-
-Where:
-- `H`: Hypothesis (clinical trial success)
-- `E`: Evidence (fund positioning, trial design, etc.)
-- `P(H)`: Prior probability (historical base rate)
-- `P(E|H)`: Likelihood (probability of observing evidence given success)
-- `P(H|E)`: Posterior probability (updated belief)
-
-### Evidence Integration
-
-Multiple evidence sources are integrated sequentially:
-
-1. **Base Rate** (Prior): Phase-specific, indication-specific historical success rate
-2. **Fund Signal**: Update based on institutional positioning
-3. **Clinical Data**: Update based on trial design, endpoints, preclinical data
-4. **Market Dynamics**: Update based on short interest, options positioning
-
-Each piece of evidence updates the probability distribution, resulting in a final posterior that incorporates all available information.
-
-### Signal Reliability
-
-Not all fund positions carry equal informational content. We weight signals by:
-
-- **Track Record**: Historical success rate at similar conviction levels
-- **Timing**: Earlier entry suggests higher conviction
-- **Fund Specialization**: Therapeutic area expertise
-- **Position Sizing**: Larger positions indicate stronger conviction
-
-## Data Sources
-
-### Clinical Trial Databases
-- **ClinicalTrials.gov**: Trial design, endpoints, status
-- **BIO/Biomedtracker**: Historical success rates by phase and indication
-- **FDA CDER**: Approval data and clinical review documents
-
-### Financial Data
-- **SEC EDGAR**: 13F filings, 10-K/10-Q reports
-- **Capital IQ / FactSet**: Financial statements, analyst estimates
-- **Market Data Vendors**: Price, volume, options flow
-
-### Institutional Data
-- **13F Filings**: Quarterly institutional holdings (>$100M AUM)
-- **Whale Wisdom**: Aggregated institutional position tracking
-- **Fund Disclosures**: Long/short letters, investor presentations
-
-## Installation
-
-### Requirements
-
+## Running It
 ```bash
-Python 3.9+
-pandas >= 1.5.0
-numpy >= 1.23.0
-scipy >= 1.9.0
-requests >= 2.28.0
-beautifulsoup4 >= 4.11.0
-sqlalchemy >= 2.0.0
+python3 Funds.py
 ```
 
-### Setup
+Full pipeline from scratch takes 1 hour (13F downloads, trial scraping, price history).
 
-```bash
-# Clone repository
-git clone https://github.com/yourusername/biofunds.git
-cd biofunds
+## Current Pipeline
 
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+System maintains forward calendar of ~180 upcoming Phase 2/3 catalysts in next 24 months. Matches against current fund holdings from most recent 13F quarter.
 
-# Install dependencies
-pip install -r requirements.txt
-
-# Set up configuration
-cp config.example.yaml config.yaml
-# Edit config.yaml with your API keys and preferences
-
-# Initialize database
-python src/setup_db.py
-
-# Run tests
-pytest tests/
+Example output:
+```
+2026-03-15 (57d)  ARDX - PHASE3 | Hyperphosphatemia | P(success): 63% [Baker Bros 6.2%]
+2026-04-22 (95d)  IONS - PHASE3 | ATTR Amyloidosis  | P(success): 71% [OrbiMed 4.8%]
 ```
 
-### Configuration
+Updates quarterly as new filings drop.
 
-Edit `config.yaml` to set:
-- Data source API keys (SEC, market data vendor)
-- Database connection strings
-- Risk management parameters (max position size, stop losses)
-- Backtesting parameters
+## Things I'd Change
 
-## Usage
+**Better disease classification:** Current keyword matching misses nuances. "Oncology" is too broad—melanoma ≠ pancreatic cancer. Need finer categories.
 
-### Data Collection
+**Incorporate trial design features:** Adaptive trials, surrogate endpoints, open-label vs blinded all matter. Haven't encoded this yet, but having spoken to doctors involved in clinical trials, they are highly standardised.
 
-```bash
-# Collect 13F filings for specified funds
-python src/data_collection/sec_scraper.py --funds baker_brothers perceptive orbimed
-
-# Update clinical trial database
-python src/data_collection/trial_data.py --update
-
-# Fetch latest market data
-python src/data_collection/market_feeds.py --tickers ARDX IONS VRTX
-```
-
-### Analysis
-
-```bash
-# Run full analysis on a ticker
-python src/analyze.py ARDX --output reports/ARDX_analysis.pdf
-
-# Screen for opportunities
-python src/screen.py --min-edge 0.20 --min-position 0.05
-
-# Backtest strategy
-python src/backtest.py --start-date 2020-01-01 --end-date 2023-12-31
-```
-
-### Portfolio Management
-
-```bash
-# Generate portfolio recommendations
-python src/portfolio/optimizer.py --strategy kelly --max-positions 10
-
-# Monitor existing positions
-python src/portfolio/risk_manager.py --alert-threshold 0.15
-```
-
-## Performance Metrics
-
-### Backtesting Results (2018-2023)
-
-```
-Total Trades:               147
-Win Rate:                   64.6%
-Average Return (Winners):   +42.3%
-Average Return (Losers):    -18.7%
-Sharpe Ratio:               1.84
-Max Drawdown:               -22.3%
-Correlation to S&P 500:     0.12
-```
-
-### Signal Performance by Conviction Level
-
-| Position Size | Trades | Win Rate | Avg Return | Sharpe |
-|--------------|--------|----------|------------|---------|
-| 0-3%         | 89     | 58.4%    | +18.2%     | 1.21    |
-| 3-5%         | 34     | 67.6%    | +31.5%     | 1.63    |
-| 5-10%        | 19     | 73.7%    | +48.9%     | 2.08    |
-| >10%         | 5      | 80.0%    | +67.2%     | 2.41    |
-
-*Higher conviction positions demonstrate superior risk-adjusted returns, validating the institutional signaling hypothesis.*
-
-## Risk Management
-
-### Position Sizing
-
-We employ fractional Kelly criterion for position sizing:
-
-```
-f* = (p × b - q) / b
-
-Where:
-- f* = fraction of capital to allocate
-- p = probability of success (posterior)
-- q = probability of failure (1 - p)
-- b = odds received on bet (upside / downside)
-
-Actual position = 0.25 × f*  # Quarter Kelly for risk management
-```
-
-### Risk Controls
-
-1. **Maximum Position Size**: 8% of portfolio (no single position dominance)
-2. **Maximum Portfolio Concentration**: Top 5 positions ≤ 30% of portfolio
-3. **Stop Losses**: 25% trailing stop on all positions
-4. **Catalyst Monitoring**: Exit 2 weeks before catalyst if thesis invalidated
-5. **Liquidity Filters**: Minimum average daily volume of $1M
-
-### Correlation Management
-
-Maintain low correlation to:
-- Broad market indices (S&P 500, Russell 2000)
-- Biotech sector indices (XBI, IBB)
-- Other portfolio positions (limit sector concentration)
-
-## Contributing
-
-We welcome contributions from quantitative researchers, biotech domain experts, and software engineers. Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-### Areas for Contribution
-
-- **Clinical Trial Expertise**: Improving Phase III success rate models
-- **Institutional Data**: Enhanced 13F parsing and fund tracking
-- **Machine Learning**: Predictive models for trial outcomes
-- **Risk Management**: Advanced portfolio optimization techniques
-- **Data Sources**: Integration of additional alpha sources
-
-## Regulatory Disclaimer
-
-**This research is for educational and informational purposes only.**
-
-This repository and its contents do not constitute investment advice, financial advice, trading advice, or any other sort of advice. The strategies, analyses, and information presented herein are based on publicly available data and academic research and should not be relied upon for making investment decisions.
-
-**Key Disclaimers:**
-
-1. **No Investment Advice**: Nothing in this repository should be construed as a recommendation to buy, sell, or hold any security.
-
-2. **Past Performance**: Backtested and historical performance do not guarantee future results.
-
-3. **Risk Disclosure**: Biotech investing involves substantial risk, including the risk of total loss of capital. Clinical trials can and do fail, even when sophisticated investors take positions.
-
-4. **Regulatory Compliance**: Any use of these strategies for actual trading should be done in consultation with qualified legal and financial advisors and in compliance with all applicable securities laws.
-
-5. **Material Non-Public Information**: This strategy relies exclusively on publicly available information. The use of material non-public information is illegal and unethical.
-
-6. **No Warranty**: The code and analyses are provided "as is" without warranty of any kind, express or implied.
-
-**By using this repository, you acknowledge that:**
-- You are solely responsible for your own investment decisions
-- You understand the risks involved in biotech investing
-- You will consult with qualified professionals before making any investment decisions
-- You will comply with all applicable securities laws and regulations
-
-## License
-
-MIT License - see [LICENSE](LICENSE) for details.
-
-## References
-
-### Academic Research
-
-1. **Hay et al. (2014)**: "Clinical development success rates for investigational drugs." *Nature Biotechnology*, 32(1), 40-51.
-
-2. **Wong et al. (2019)**: "Estimation of clinical trial success rates and related parameters." *Biostatistics*, 20(2), 273-286.
-
-3. **BIO/Biomedtracker (2020)**: "Clinical Development Success Rates 2006-2015." Biotechnology Innovation Organization.
-
-4. **DiMasi et al. (2016)**: "Innovation in the pharmaceutical industry: New estimates of R&D costs." *Journal of Health Economics*, 47, 20-33.
-
-5. **Thomas et al. (2016)**: "Clinical development success rates 2006-2015." BIO Industry Analysis.
-
-### Market Efficiency Literature
-
-6. **Fama, E.F. (1970)**: "Efficient Capital Markets: A Review of Theory and Empirical Work." *Journal of Finance*, 25(2), 383-417.
-
-7. **Grossman, S.J. & Stiglitz, J.E. (1980)**: "On the Impossibility of Informationally Efficient Markets." *American Economic Review*, 70(3), 393-408.
-
-8. **Hong, H. & Stein, J.C. (1999)**: "A Unified Theory of Underreaction, Momentum Trading, and Overreaction in Asset Markets." *Journal of Finance*, 54(6), 2143-2184.
-
-### Bayesian Methods
-
-9. **Gelman, A. et al. (2013)**: *Bayesian Data Analysis*, 3rd Edition. Chapman and Hall/CRC.
-
-10. **Pearl, J. (1988)**: *Probabilistic Reasoning in Intelligent Systems*. Morgan Kaufmann.
-
-## Acknowledgments
-
-This research builds upon the foundational work of:
-- Benjamin Graham and David Dodd on security analysis
-- The efficient markets literature from Eugene Fama
-- Bayesian inference frameworks from Andrew Gelman and Judea Pearl
-- The biotech investment community for sharing clinical trial insights
-
-Special thanks to the open-source community for the tools that made this research possible.
-
----
-
-**Contact**: [Your Email] | **Website**: [Your Website]  
-**Last Updated**: January 2026
+**Short side:** Could track fund exits as negative signal. If Baker Bros dumps a 6% position 2 quarters before catalyst, that's something to include.
