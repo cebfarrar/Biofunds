@@ -4,9 +4,9 @@
 
 Tracks what biotech-only hedge funds are betting on and attempts to profit from their positioning. The basic premise is wisdom of the crowd applied to hedge funds, whose conviction (percentage concentration of their fund in a single Phase 2/3 trial), signals confidence in approval, and using an aggregate of all of their bets, to benefit from their scientific understanding. 
 
-## The Idea
+## Hypothesis
 
-Biotech markets systematically misprice binary clinical events. A Phase 3 trial either works or it doesn't, but the market often gets the probability wrong. Meanwhile, specialist funds with PhDs on staff and years of experience are taking concentrated bets.
+Biotech markets systematically misprice binary clinical events. A Phase 3 trial either works or it doesn't, but the market often gets the probability wrong. Meanwhile, specialist funds with PhDs on staff and years of experience are taking concentrated bets, and I believe they would be more accurate than the market.
 
 ## Three-Step Process
 
@@ -26,6 +26,36 @@ P(success) = (Current Price - Failure Value) / (Success Value - Failure Value)
 This gives you the market's implied probability of the full success path: Phase 3 works AND FDA approves AND commercial launch succeeds AND company doesn't go bankrupt.
 
 To isolate just Phase 3 probability, divide out the downstream steps using industry benchmarks (~85% FDA approval post-Phase 3, ~90% commercial execution, ~96% no bankruptcy).
+
+Example:
+**Company X:** Phase 3 nephrology readout Q2 2026
+
+**Market data:**
+- Current price: $30
+- Success scenario DCF: $121 (assuming approval, market penetration, 10x EBITDA multiple - usual multiple is 8-20x)
+- Failure liquidation: $0.75 (cash + salvage - liabilities)
+
+**Implied probability:**
+```
+P(full path) = ($30 - $0.75) / ($121 - $0.75) = 24.4%
+P(Phase 3) = 24.4% / (0.85 × 0.90 × 0.96) = 31.4%
+```
+
+**Fund positioning:**
+- Baker Bros: 6.2% position, entered Q2 2025
+- Historical at 6%+: 68% success rate (38 bets)
+
+**Base rate:** 58.6% (nephrology Phase 3 historical average)
+
+**Bayesian posterior:** Blend base rate with fund signal weighted by position size and track record → 63%
+
+**Expected value:**
+```
+EV = 0.63 × ($121 - $30) + 0.37 × ($0.75 - $30)
+   = 0.63 × $91 + 0.37 × (-$29.25)
+   = $57.33 - $10.82
+   = +$46.51 per share = +155%
+```
 
 ### 2. What do the smart funds think?
 
@@ -93,50 +123,17 @@ Posterior = (base_rate × 100 + Σ(fund_success_rate × weight)) / (100 + Σ(wei
 
 Signal triggers when posterior diverges significantly from market-implied probability:
 - Long: posterior > market + threshold
-- Short: posterior < market - threshold (rare in practice)
-
-## Example Walkthrough
-
-**Company X:** Phase 3 nephrology readout Q2 2026
-
-**Market data:**
-- Current price: $30
-- Success scenario DCF: $121 (assuming approval, market penetration, 10x EBITDA multiple - usual multiple is 8-20x)
-- Failure liquidation: $0.75 (cash + salvage - liabilities)
-
-**Implied probability:**
-```
-P(full path) = ($30 - $0.75) / ($121 - $0.75) = 24.4%
-P(Phase 3) = 24.4% / (0.85 × 0.90 × 0.96) = 31.4%
-```
-
-**Fund positioning:**
-- Baker Bros: 6.2% position, entered Q2 2025
-- Historical at 6%+: 68% success rate (38 bets)
-
-**Base rate:** 58.6% (nephrology Phase 3 historical average)
-
-**Bayesian posterior:** Blend base rate with fund signal weighted by position size and track record → 63%
-
-**Expected value:**
-```
-EV = 0.63 × ($121 - $30) + 0.37 × ($0.75 - $30)
-   = 0.63 × $91 + 0.37 × (-$29.25)
-   = $57.33 - $10.82
-   = +$46.51 per share = +155%
-```
-
-Quarter-Kelly sizing: ~4% of portfolio.
+- Short (doesn't work): posterior < market - threshold (rare in practice)
 
 ## What This Taught Me
 
 **Fund track records matter.** OrbiMed with 219 training bets gives much stronger signal than EcoR1 with 3 bets. The system explicitly penalizes low-sample funds through credibility scoring.
 
-**Position size is predictive.** Funds at 7%+ concentration hit ~73% vs ~58% at 3-5%. They're genuinely better at picking when they bet big.
+**Position size is predictive.** Funds at 7%+ concentration hit ~73% vs ~58% at 3-5%. When they bet big they are more certain.
 
 **Base rates are harder than expected.** Disease classification matters enormously—calling something "oncology" (48% success) vs "hematology" (69%) changes the calculation. Spent a while tuning the disease category dictionary.
 
-**Transaction costs hurt.** Modeled 0.3% spread on longs, 1.16% on shorts (2% annual borrow × 120 days + 0.5% spread). Real costs are probably higher for small accounts.
+**Transaction costs hurt.** Shorts don't work at all. I tried playing around with them, but the project design is not suited for them. In reality a downgrade to a trial outcome, is a bad BUY signal, rather than a short/put signal.
 
 **Win rate doesn't matter as much as payoff ratio.** 48% win rate with 1.3x profit factor still makes money. The winners run far (avg +34%) while losers cap out around -25% due to stop losses.
 
@@ -210,3 +207,9 @@ Updates quarterly as new filings drop.
 **Incorporate trial design features:** Adaptive trials, surrogate endpoints, open-label vs blinded all matter. Haven't encoded this yet, but having spoken to doctors involved in clinical trials, they are highly standardised.
 
 **Short side:** Could track fund exits as negative signal. If Baker Bros dumps a 6% position 2 quarters before catalyst, that's something to include.
+
+## How to run it
+Download the code, run #1,2,3,4,4.5,5,6,7,8 one after the other. 
+This will create tickers.csv in sec-edgar-filings, you have to manually look up the ticker, the exchange (e.g NYSE) and whether it's a biotech, if yes, type "Yes" (without quotation mark). Gemini is very good at this, and will generate this into a Google sheet, and you copy paste it into the tickers.csv file. Done
+Then run #9,10,11,12,13,14,15,16 (both functions),17,18,19
+#18 and #19 are for backtesting!
