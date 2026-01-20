@@ -107,31 +107,31 @@ The test period covers both the 2021-2023 biotech bear market and the 2024-2025 
 
 | Metric | Value |
 |--------|-------|
-| Trials screened | 2,674 |
-| Trades taken | 1,193 (44.6% of opportunities) |
-| Win rate | 48.4% |
-| Average win | +34.0% |
-| Average loss | -25.0% |
-| Best trade | +198.5% |
+| Trials screened | 1,873 |
+| Trades taken | 689 (36.8% of opportunities) |
+| Win rate | 50.2% |
+| Average win | +30.63% |
+| Average loss | -24.54% |
+| Best trade | +197.5% |
 | Worst trade | -93.2% |
 | Avg trade (after costs) | +3.8% |
 
 ### Portfolio-Level Performance
 
-Assumptions: 2% position sizing, max 50 concurrent positions, rebalanced quarterly
+Assumptions: 2.5% position sizing, max 40 concurrent positions, rebalanced quarterly
 
 | Metric | Value |
 |--------|-------|
-| CAGR | 9.3 |
-| Sharpe ratio | 0.466 |
-| Max drawdown | -36.45% |
-| Correlation to S&P 500 | 0.192 |
-| Beta | 0.249 |
+| CAGR | 9.91 |
+| Sharpe ratio | 0.536 |
+| Max drawdown | -34.69% |
+| Correlation to S&P 500 | 0.105 |
+| Beta | 0.150 |
 
 **Notes:**
-- Win rate is below 50%, but profitable because winners (+34% avg) significantly outsize losers (-25% avg)
+- Win rate is >50% and profitable because winners (+30% avg) outsize losers (-25% avg)
 - Profit factor: 1.3x
-- The 36.6% drawdown occurred during the 2021-2022 biotech bear market when multiple trials failed in succession
+- The 34.69% drawdown occurred during the 2021-2022 biotech bear market when multiple trials failed in succession
 - XBI (biotech ETF) fell 60% in the same period—strategy held up better but still brutal
 
 ## Methodology Details
@@ -317,8 +317,8 @@ backtest_df = backtest_bayesian_strategy(
     )
 
     stats_realistic = calculate_portfolio_level_statistics(
-    position_size=0.02,  # 2% per position
-    max_concurrent=50     # Up to 50 positions at once
+    position_size=0.025,  # 2% per position
+    max_concurrent=40     # Up to 50 positions at once
     )
 ```
 
