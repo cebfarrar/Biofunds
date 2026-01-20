@@ -122,10 +122,11 @@ Assumptions: 2% position sizing, max 50 concurrent positions, rebalanced quarter
 
 | Metric | Value |
 |--------|-------|
-| CAGR | 11.9% |
-| Sharpe ratio | 0.64 |
-| Max drawdown | -36.6% |
-| Correlation to S&P 500 | 0.08 |
+| CAGR | 9.3 |
+| Sharpe ratio | 0.466 |
+| Max drawdown | -36.45% |
+| Correlation to S&P 500 | 0.192 |
+| Beta | 0.249 |
 
 **Notes:**
 - Win rate is below 50%, but profitable because winners (+34% avg) significantly outsize losers (-25% avg)
